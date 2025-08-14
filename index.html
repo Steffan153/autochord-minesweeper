@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Minesweeper</title>
+    <style>
+      .top {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 20px;
+        margin-bottom: 20px;
+        width: 100%;
+        max-width: 600px;
+      }
+      .time {
+        font-family: monospace;
+        font-size: 2rem;
+      }
+      .settings {
+        background: #ccc;
+        padding: 5px 10px;
+        font-family: system-ui;
+        font-size: 2rem;
+        text-align: center;
+        border: none;
+        cursor: pointer;
+      }
+      .emote {
+        font-family: system-ui;
+        font-size: 2rem;
+        text-align: center;
+        background: #ccc;
+        cursor: pointer;
+        padding: 5px 10px;
+        display: inline-block;
+      }
+      .grid {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid #888;
+        user-select: none;
+      }
+
+      .grid > div {
+        display: flex;
+      }
+
+      .grid > div > div {
+        width: 35px;
+        height: 35px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 1.7rem;
+        font-family: system-ui;
+        background: #ddd;
+        color: blue;
+        font-weight: bold;
+        border: 1px solid #888;
+      }
+
+      .grid .n2 {
+        color: green;
+      }
+
+      .grid .n3 {
+        color: red;
+      }
+
+      .grid .n4 {
+        color: purple;
+      }
+
+      .grid > div > div.blank {
+        background: #bbb;
+      }
+
+      .grid > div > div.empty {
+        background: #ddd;
+      }
+
+      .grid > div > div.active {
+        background: rgb(255, 255, 154);
+      }
+
+      .container {
+        display: flex;
+        flex-flow: column;
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="top">
+        <button class="settings">⛭</button>
+        <div class="emote"></div>
+        <div class="time">000</div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <dialog class="settings-dialog">
+      <p>Board width: <input type="number" value="16" class="board-width" /></p>
+      <p>Board height: <input type="number" value="16" class="board-height" /></p>
+      <p>Mine count: <input type="number" value="40" class="mines" /></p>
+
+      <button class="settings-ok">OK</button>
+    </dialog>
+
+    <script>
+      const $ = (x) => document.querySelector(x);
+      const $$ = (x) => document.querySelectorAll(x);
+
+      function shuffle(a) {
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      }
+
+      const chunk = (a, n) => {
+        const b = [];
+        while (a.length) {
+          b.push(a.slice(0, n));
+          a = a.slice(n);
+        }
+        return b;
+      };
+
+      let w = ~~localStorage.getItem('bw') || 16;
+      let h = ~~localStorage.getItem('bh') || 16;
+      let minecount = ~~localStorage.getItem('mc') || 40;
+
+      $('.board-width').value = w;
+      $('.board-height').value = h;
+      $('.mines').value = minecount;
+
+      let coords = [],
+        els = [],
+        fc,
+        lost,
+        minefield,
+        map,
+        revealed;
+
+      const surrounding = (i, j) => {
+        return [-1, 0, 1]
+          .flatMap((x) => [-1, 0, 1].map((y) => [i + x, j + y]))
+          .filter((x) => x[0] >= 0 && x[0] < h && x[1] >= 0 && x[1] < w);
+      };
+
+      function generateMap() {
+        coords.forEach(([x, y]) => {
+          (map[x] ||= [])[y] = minefield[x][y] ? -1 : surrounding(x, y).reduce((a, [i, j]) => a + minefield[i][j], 0);
+        });
+      }
+
+      function updateMap() {
+        map.forEach((x, i) => {
+          x.forEach((y, j) => {
+            if (revealed[i][j]) {
+              const u = els[i][j];
+              u.className = map[i][j] ? '' : 'empty';
+              if (map[i][j]) {
+                u.innerText = map[i][j] === -1 ? '💣' : map[i][j];
+                u.classList.add('n' + map[i][j]);
+              }
+            }
+          });
+        });
+        if (revealed.every((x, i) => x.every((y, j) => y || minefield[i][j]))) {
+          clearInterval(interval);
+          $('.emote').innerText = '😃';
+        }
+      }
+
+      $('.settings').addEventListener('click', () => $('.settings-dialog').showModal());
+
+      $('.settings-ok').addEventListener('click', () => {
+        const ww = ~~$('.board-width').value;
+        const hh = ~~$('.board-height').value;
+        const mines = ~~$('.mines').value;
+
+        if (ww >= 2 && ww <= 99) {
+          w = ww;
+        }
+        if (hh >= 2 && hh <= 99) {
+          h = hh;
+        }
+        minecount = Math.max(1, Math.min(w * h - 1, mines));
+
+        localStorage.setItem('bw', w);
+        localStorage.setItem('bh', h);
+        localStorage.setItem('mc', minecount);
+        build();
+        start();
+
+        $('.settings-dialog').close();
+      });
+
+      let ti;
+      let interval;
+
+      function start() {
+        clearInterval(interval);
+        fc = 1;
+        lost = 0;
+        ti = 0;
+        $('.time').innerText = '000';
+        minefield = Array(minecount).fill(1);
+
+        while (minefield.length < w * h) {
+          minefield.push(0);
+        }
+        shuffle(minefield);
+        minefield = chunk(minefield, w);
+        revealed = minefield.map((x) => x.map((x) => 0));
+
+        map = [];
+        $$('.grid > div > div').forEach((x) => {
+          x.className = 'blank';
+          x.innerText = '';
+        });
+        $('.emote').innerText = '😀';
+      }
+
+      function lose() {
+        lost = 1;
+        $('.emote').innerText = '🤯';
+        clearInterval(interval);
+      }
+      function reveal(i, j) {
+        if (revealed[i][j]) return;
+        revealed[i][j] = 1;
+        if (minefield[i][j]) {
+          return lose();
+        }
+        if (map[i][j] === 0) {
+          surrounding(i, j).forEach(([x, y]) => reveal(x, y));
+        }
+        chord(i, j);
+      }
+
+      function chord(i, j) {
+        surrounding(i, j).forEach(([x, y]) => {
+          els[x][y].classList.remove('active');
+        });
+        if (revealed[i][j] && map[i][j]) {
+          const l = surrounding(i, j);
+          const flags = l.reduce((a, [x, y]) => a + (els[x][y].innerText === '⛳️'), 0);
+          if (flags === map[i][j]) {
+            l.forEach(([x, y]) => {
+              if (els[x][y].classList.contains('blank') && !els[x][y].innerText) {
+                reveal(x, y);
+              }
+            });
+            updateMap();
+          }
+        }
+      }
+
+      start();
+      $('.emote').addEventListener('click', start);
+
+      function build() {
+        els = [];
+        coords = [];
+        $('.grid').innerHTML = '';
+        for (let i = 0; i < h; i++) {
+          const d = document.createElement('div');
+          d.style.display = 'flex';
+
+          const a = [];
+          const o = [];
+
+          for (let j = 0; j < w; j++) {
+            coords.push([i, j]);
+            const x = document.createElement('div');
+            x.className = 'blank';
+            d.append(x);
+            o.push(x);
+            x.addEventListener('contextmenu', (e) => e.preventDefault());
+
+            x.addEventListener('mousedown', (e) => {
+              if (lost) return;
+              e.preventDefault();
+              if (e.button === 1) {
+                surrounding(i, j).forEach(([x, y]) => {
+                  if (els[x][y].classList.contains('blank') && !els[x][y].innerText && !(x === i && y === j))
+                    els[x][y].classList.add('active');
+                });
+              }
+            });
+
+            x.addEventListener('mouseup', (e) => {
+              if (lost) return;
+              e.preventDefault();
+              if (e.button === 0) {
+                if (x.innerText === '⛳️') return;
+                if (fc) {
+                  interval = setInterval(() => {
+                    $('.time').innerText = ('00' + ++ti).slice(-3);
+                  }, 1000);
+                  const a = surrounding(i, j);
+                  let c = shuffle(coords.filter((x) => !a.some((y) => y + '' === x + '')).filter((x) => !minefield[x[0]][x[1]]));
+                  a.forEach(([x, y]) => {
+                    if (minefield[x][y]) {
+                      const [x1, y1] = c.shift();
+                      minefield[x][y] = 0;
+                      minefield[x1][y1] = 1;
+                    }
+                  });
+                  generateMap();
+                  fc = 0;
+                }
+                reveal(i, j);
+                updateMap();
+              }
+              if (e.button === 1) {
+                chord(i, j);
+              }
+              if (e.button === 2) {
+                if (x.classList.contains('blank')) {
+                  x.innerText = x.innerText ? '' : '⛳️';
+                  if (x.innerText) {
+                    surrounding(i, j).forEach(([a, b]) => chord(a, b));
+                  }
+                }
+              }
+            });
+          }
+
+          $('.grid').append(d);
+          els.push(o);
+        }
+      }
+
+      build();
+    </script>
+  </body>
+</html>
